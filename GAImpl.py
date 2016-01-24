@@ -216,7 +216,7 @@ class ScheduleEvaluator(Evaluator):
 
             if shift_name and prev_shift and shift_name in self._no_follows[prev_shift]:
                 broke_hard += 1
-                print '{}: Shift {} cannot follow shift {}'.format(day, shift_name, prev_shift)
+                #print '{}: Shift {} cannot follow shift {}'.format(day, shift_name, prev_shift)
 
             if shift_name != '': # Is not a vacation
                 max_shifts[shift_name] += 1
@@ -226,7 +226,7 @@ class ScheduleEvaluator(Evaluator):
                 if not (vacation_streak == day or day == self._problem.days - 1):
                     if vacation_streak < day and 0 < vacation_streak < employee.min_consecutive_days_off:
                         broke_hard += 1
-                        print '{}: Broke minimum consecutive days off {}/{} on day {} of {}'.format(day, vacation_streak, employee.min_consecutive_days_off, day, self._problem.days)
+                        #print '{}: Broke minimum consecutive days off {}/{} on day {} of {}'.format(day, vacation_streak, employee.min_consecutive_days_off, day, self._problem.days)
 
                 vacation_streak = 0
 
@@ -234,7 +234,7 @@ class ScheduleEvaluator(Evaluator):
 
                 if work_streak > employee.max_consecutive_shifts:
                     broke_hard += 1
-                    print '{}: Broke maximum consecutive shifts {}/{}'.format(day, work_streak, employee.max_consecutive_shifts)
+                    #print '{}: Broke maximum consecutive shifts {}/{}'.format(day, work_streak, employee.max_consecutive_shifts)
 
                 if is_saturday(day) or (not already_worked_this_weekend and is_sunday(day)):
                     work_weekends += 1
@@ -244,12 +244,12 @@ class ScheduleEvaluator(Evaluator):
 
                 if day in employee.days_off:
                     broke_hard += 1
-                    print '{}: Broke employee day off'.format(day)
+                    #print '{}: Broke employee day off'.format(day)
 
             else: # Is a vacation
                 if 0 < work_streak < employee.min_consecutive_shifts:
                     broke_hard += 1
-                    print '{}: Worked too few days before vacation {}/{}'.format(day, work_streak, employee.min_consecutive_shifts)
+                    #print '{}: Worked too few days before vacation {}/{}'.format(day, work_streak, employee.min_consecutive_shifts)
 
                 work_streak = 0
                 vacation_streak += 1
@@ -262,21 +262,21 @@ class ScheduleEvaluator(Evaluator):
         # Check max shifts
         for shift in self._shift_map:
             if max_shifts.get(shift, 0) > employee.get_max_shift(shift):
-                print 'Worked too many shifts of type {}: {} when max is {}'.format(shift, max_shifts.get(shift, 0), employee.get_max_shift(shift))
+                #print 'Worked too many shifts of type {}: {} when max is {}'.format(shift, max_shifts.get(shift, 0), employee.get_max_shift(shift))
                 broke_hard += 1
 
         # Check min and max work hours
         if time_worked < employee.min_total_minutes or time_worked > employee.max_total_minutes:
-            print 'Worked total minutes {} when expecting [{}, {}]'.format(time_worked, employee.min_total_minutes, employee.max_total_minutes)
+            #print 'Worked total minutes {} when expecting [{}, {}]'.format(time_worked, employee.min_total_minutes, employee.max_total_minutes)
             broke_hard += 1
 
         # Check max work weekends
         if work_weekends > employee.max_weekends:
-            print 'Worked too many weekends {}/{}'.format(work_weekends, employee.max_weekends)
+            #print 'Worked too many weekends {}/{}'.format(work_weekends, employee.max_weekends)
             broke_hard += 1
 
-        if broke_hard > 0:
-            print "======>{}".format(i)
+        #if broke_hard > 0:
+            #print "======>{}".format(i)
 
 
         return broke_hard, score
@@ -341,9 +341,10 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
             too_many_work_weekends = work_weekends >= employee.max_weekends and would_be_new_work_weekend
 
             # DON'T work a weekend unless you have to for fulfilling the min_days criterion
-            can_skip_weeekend = is_saturday(day) and employee.min_consecutive_shifts <= work_streak
+            can_skip_weekend =  (is_sunday(day) and not prev_shift and would_be_new_work_weekend) \
+                             or (is_saturday(day) and employee.min_consecutive_shifts <= work_streak)
 
-            if needs_vacation or is_day_off or done_working or not_done_vacationing or too_many_work_weekends or can_skip_weeekend or not valid_shifts:
+            if needs_vacation or is_day_off or done_working or not_done_vacationing or too_many_work_weekends or can_skip_weekend or not valid_shifts:
                 # If this would break the minimum work days constraint,
                 # go back and remove the previous few work days
                 # to make it all work
@@ -383,7 +384,7 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
                         print '{}\t \t-- Cannot work any longer'.format(day)
                     elif not_done_vacationing:
                         print '{}\t \t-- Still on vacation'.format(day)
-                    elif can_skip_weeekend:
+                    elif can_skip_weekend:
                         print '{}\t \t-- Skipping a weekend because I can!'.format(day)
                     elif too_many_work_weekends:
                         print '{}\t \t-- Already worked too many weekends'.format(day)
@@ -410,12 +411,12 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
                 """
 
         if time_worked < employee.min_total_minutes:
-            print 'Trying to fix one here'
-            print 'Work weekends: {}/{}'.format(work_weekends, employee.max_weekends)
+            pass
+            #print 'Trying to fix one here'
+            #print 'Work weekends: {}/{}'.format(work_weekends, employee.max_weekends)
 
 
     def generate_population(self, size):
-        # Completely randomply generate a population
         pops = []
 
         for i in xrange(size):
