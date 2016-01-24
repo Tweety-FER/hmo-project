@@ -125,6 +125,8 @@ class ScheduleEvaluator(Evaluator):
         self._problem = problem
         self._employee_map = {}
         self._shift_map = {}
+        self._no_follows = {s.name : s.not_followed_by for s in self._problem.shifts}
+        self._shift_durations = {s.name : s.time for s in self._problem.shifts}
 
         for i, e in enumerate(self._problem.employees):
             self._employee_map[e.name] = i
@@ -195,81 +197,58 @@ class ScheduleEvaluator(Evaluator):
         return score
 
     def _evaluate_for_employee(self, row, i):
-        prev_shift = None
-        max_shifts = {}
+        prev_shift = ''
+        max_shifts = {s : 0 for s in self._shift_map}
         time_worked = 0
-        work_streak = None
-        vacation_streak = None
+        work_streak = 0
+        vacation_streak = 0
         work_weekends = 0
         employee = self._problem.employees[i]
+
         score = 0
         already_worked_this_weekend = False
-        prev_shift = None
         broke_hard = 0
-
-        for name in self._shift_map:
-            max_shifts[name] = 0
 
         for day in xrange(self._problem.days):
             shift_name = row[day]
 
-            if is_saturday(day):
-                already_worked_this_weekend = False
+            if shift_name and prev_shift and shift_name in self._no_follows[prev_shift]:
+                broke_hard += 1
+                print 'Shift {} cannot follow shift {}'.format(shift_name, prev_shift)
 
-            if shift_name:
-                shift = self._problem.shifts[self._shift_map[shift_name]]
+            if shift_name: # Is not a vacation
+                max_shifts[shift_name] += 1
+                time_worked += self._shift_durations[shift_name]
 
-                if work_streak is None:
-                    work_streak = 0
+                if vacation_streak > 0 and vacation_streak < employee.min_consecutive_days_off:
+                    broke_hard += 1
+                    print 'Broke minimum consecutive days off {}/{}'.format(vacation_streak, employee.min_consecutive_days_off)
+
+                vacation_streak = 0
 
                 work_streak += 1
 
-                if is_saturday(day):
-                    work_weekends += 1
-                    already_worked_this_weekend = True # Do not count one weekend twice
-
-                if is_sunday and not already_worked_this_weekend:
-                    work_weekends += 1
-
-                # Vacation streak possibly just ended. Check if too short
-                if vacation_streak is not None and vacation_streak < employee.min_consecutive_days_off:
-                    print 'Under minimum vacations'
+                if work_streak > employee.max_consecutive_shifts:
                     broke_hard += 1
+                    print 'Broke maximum consecutive shifts {}/{}'.format(work_streak, employee.max_consecutive_shifts)
 
-                vacation_streak = 1 if vacation_streak is None else vacation_streak + 1
+                if is_saturday(day) or (not already_worked_this_weekend and is_sunday(day)):
+                    work_weekends += 1
+                    already_worked_this_weekend = True
+                else:
+                    already_worked_this_weekend = False
 
-                # Check invalid shifts lined up
-                if prev_shift:
-                    actual_prev_shift = self._problem.shifts[self._shift_map[prev_shift]]
-                    if not shift.can_follow(actual_prev_shift):
-                        print 'Invalid shift follows this shift'
-                        broke_hard += 1
-
-                # Update shift counter
-                max_shifts[shift_name] += 1
-
-                #Check if day off
                 if day in employee.days_off:
-                    print 'Working on a day off'
                     broke_hard += 1
+                    print 'Broke employee day off'
 
-
-
-                # Update work hours
-                time_worked += shift.time
-            else:
-                if vacation_streak is None:
-                    vacation_streak = 0
-
-                # Work streak possibly just ended. Check if in min, max bounds
-                if work_streak is not None:
-                    if work_streak < employee.min_consecutive_shifts or work_streak > employee.max_consecutive_shifts:
-                        print 'Worked {} shifts when expecting [{}, {}]'.format(work_streak, employee.min_consecutive_shifts, employee.max_consecutive_shifts)
+                else: # Is a vacation
+                    if work_streak > 0 and work_streak < employee.min_consecutive_shifts:
                         broke_hard += 1
+                        print 'Worked too few days before vacation {}/{}'.format(work_streak, employee.min_consecutive_shifts)
 
-                work_streak = None
-
-                vacation_streak += 1
+                    work_streak = 0
+                    vacation_streak += 1
 
             # Soft constraint: requests for days on/off
             score += employee.get_shift_penalty(day, shift_name)
