@@ -18,6 +18,9 @@ evaluator = ScheduleEvaluator(problem)
 #ga.print_every = 50
 pop = pop_gen.generate_population(1)[0]
 
+row = pop._matrix[1]
+for day, e in enumerate(row):
+    print '{}\t:\t{}'.format(day, e)
 evaluator.evaluate(pop)
 
 #solution, score = ga.run(POP_SIZE, MIN_ERR, MAX_ITER)

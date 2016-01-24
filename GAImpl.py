@@ -8,6 +8,8 @@ from sys import exit
 N_MUTATIONS = 2 # Maximum number of possible mutations in generation
 P_MUTATION = 0.1
 
+P_NOT_WORKING = 0.15
+
 HARD_CONSTR_PENALTY = 2500 # Penalty for each break of hard constraints
 
 def is_saturday(day):
@@ -214,15 +216,17 @@ class ScheduleEvaluator(Evaluator):
 
             if shift_name and prev_shift and shift_name in self._no_follows[prev_shift]:
                 broke_hard += 1
-                print 'Shift {} cannot follow shift {}'.format(shift_name, prev_shift)
+                print '{}: Shift {} cannot follow shift {}'.format(day, shift_name, prev_shift)
 
-            if shift_name: # Is not a vacation
+            if shift_name != '': # Is not a vacation
                 max_shifts[shift_name] += 1
                 time_worked += self._shift_durations[shift_name]
 
-                if vacation_streak > 0 and vacation_streak < employee.min_consecutive_days_off:
-                    broke_hard += 1
-                    print 'Broke minimum consecutive days off {}/{}'.format(vacation_streak, employee.min_consecutive_days_off)
+                # Infinite days off beforehand and afterwards, we can not check those
+                if not (vacation_streak == day or day == self._problem.days - 1):
+                    if vacation_streak < day and 0 < vacation_streak < employee.min_consecutive_days_off:
+                        broke_hard += 1
+                        print '{}: Broke minimum consecutive days off {}/{} on day {} of {}'.format(day, vacation_streak, employee.min_consecutive_days_off, day, self._problem.days)
 
                 vacation_streak = 0
 
@@ -230,7 +234,7 @@ class ScheduleEvaluator(Evaluator):
 
                 if work_streak > employee.max_consecutive_shifts:
                     broke_hard += 1
-                    print 'Broke maximum consecutive shifts {}/{}'.format(work_streak, employee.max_consecutive_shifts)
+                    print '{}: Broke maximum consecutive shifts {}/{}'.format(day, work_streak, employee.max_consecutive_shifts)
 
                 if is_saturday(day) or (not already_worked_this_weekend and is_sunday(day)):
                     work_weekends += 1
@@ -240,15 +244,15 @@ class ScheduleEvaluator(Evaluator):
 
                 if day in employee.days_off:
                     broke_hard += 1
-                    print 'Broke employee day off'
+                    print '{}: Broke employee day off'.format(day)
 
-                else: # Is a vacation
-                    if work_streak > 0 and work_streak < employee.min_consecutive_shifts:
-                        broke_hard += 1
-                        print 'Worked too few days before vacation {}/{}'.format(work_streak, employee.min_consecutive_shifts)
+            else: # Is a vacation
+                if 0 < work_streak < employee.min_consecutive_shifts:
+                    broke_hard += 1
+                    print '{}: Worked too few days before vacation {}/{}'.format(day, work_streak, employee.min_consecutive_shifts)
 
-                    work_streak = 0
-                    vacation_streak += 1
+                work_streak = 0
+                vacation_streak += 1
 
             # Soft constraint: requests for days on/off
             score += employee.get_shift_penalty(day, shift_name)
@@ -271,6 +275,9 @@ class ScheduleEvaluator(Evaluator):
             print 'Worked too many weekends {}/{}'.format(work_weekends, employee.max_weekends)
             broke_hard += 1
 
+        if broke_hard > 0:
+            print "======>{}".format(i)
+
 
         return broke_hard, score
 
@@ -292,7 +299,7 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
     def _generate_employee_assignments(self, i, inst):
         work_weekends = 0
         work_streak = 0
-        vacation_streak = 0
+        vacation_streak = 10000 # Large enough to represent infinity
         time_worked = 0
         already_worked_this_weekend = False
         assigned_shifts = {shift : 0 for shift in self._shift_types}
@@ -307,6 +314,23 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
         possible_shifts = sorted(possible_shifts, key=lambda x: x[1])#, reverse=True)
 
         for day in xrange(self._problem.days):
+            # We need to find the shifts the person CAN work
+            # They cannot work shifts that cannot follow this one,
+            # shifts that would put them over the max hours or shifts
+            # that they've already done enough of
+            valid_shifts = []
+
+            for shift, duration in possible_shifts:
+                if prev_shift and shift in self._no_follows[prev_shift]:
+                    continue
+                if time_worked + duration > employee.max_total_minutes:
+                    continue
+                if assigned_shifts[shift] + 1 > employee.get_max_shift(shift):
+                    continue
+
+                valid_shifts.append((shift, duration))
+
+            # Is this a new work weekend introduction?
             would_be_new_work_weekend = is_saturday(day) or (is_sunday(day) and not already_worked_this_weekend)
 
             # Check for situations when we CANNOT assign a user a task
@@ -316,49 +340,79 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
             not_done_vacationing = 0 < vacation_streak < employee.min_consecutive_days_off
             too_many_work_weekends = work_weekends >= employee.max_weekends and would_be_new_work_weekend
 
-            if needs_vacation or is_day_off or done_working or not_done_vacationing or too_many_work_weekends:
+            # DON'T work a weekend unless you have to for fulfilling the min_days criterion
+            can_skip_weeekend = is_saturday(day) and employee.min_consecutive_shifts <= work_streak
+
+            if needs_vacation or is_day_off or done_working or not_done_vacationing or too_many_work_weekends or can_skip_weeekend or not valid_shifts:
+                # If this would break the minimum work days constraint,
+                # go back and remove the previous few work days
+                # to make it all work
+                if 0 < work_streak < employee.min_consecutive_shifts:
+                    removed_this_weekend = False
+
+                    for offset in xrange(1, work_streak + 1):
+                        old_day = day - offset
+
+                        old_job = inst._matrix[i][old_day]
+                        inst._matrix[i][old_day] = ''
+                        assigned_shifts[old_job] -= 1
+                        time_worked -= self._shift_durations[old_job]
+
+                        if is_sunday(old_day):
+                            work_weekends -= 1
+                            removed_this_weekend = True
+                        elif is_saturday(old_day) and not removed_this_weekend:
+                            work_weekends -= 1
+                            removed_this_weekend = False
+                        else:
+                            removed_this_weekend = False
+
+
                 work_streak = 0
                 vacation_streak += 1
                 prev_shift = ''
 
                 inst._matrix[i][day] = ''
-
+                """
+                if i == 1:
+                    if needs_vacation:
+                        print '{}\t \t-- Worked max shifts'.format(day)
+                    elif is_day_off:
+                        print '{}\t \t-- Is a day off'.format(day)
+                    elif done_working:
+                        print '{}\t \t-- Cannot work any longer'.format(day)
+                    elif not_done_vacationing:
+                        print '{}\t \t-- Still on vacation'.format(day)
+                    elif can_skip_weeekend:
+                        print '{}\t \t-- Skipping a weekend because I can!'.format(day)
+                    elif too_many_work_weekends:
+                        print '{}\t \t-- Already worked too many weekends'.format(day)
+                    else:
+                        print '{}\t \t-- No jobs available'.format(day)
+                """
             else: # You're working, man
-                # We need to find the shifts the person CAN work
-                # They cannot work shifts that cannot follow this one,
-                # shifts that would put them over the max hours or shifts
-                # that they've already done enough of
-                valid_shifts = []
+                job, duration = valid_shifts[0]
+                time_worked += duration
 
-                for shift, duration in possible_shifts:
-                    if prev_shift and shift in self._no_follows[prev_shift]:
-                        continue
-                    if time_worked + duration > employee.max_total_minutes:
-                        continue
-                    if assigned_shifts[shift] + 1 > employee.get_max_shift(shift):
-                        continue
+                inst._matrix[i][day] = job
+                prev_shift = job
 
-                    valid_shifts.append((shift, duration))
+                assigned_shifts[job] += 1
+                work_streak += 1
+                vacation_streak = 0
 
-                # TODO random choice?
-                if valid_shifts: # Any actual choices left?
-                    job, duration = valid_shifts[0]
-                    time_worked += duration
-                    prev_shift = job
-                    assigned_shifts[job] += 1
+                if would_be_new_work_weekend:
+                    work_weekends += 1
 
-                    work_streak += 1
-                    vacation_streak = 0
-                    inst._matrix[i][day] = job
+                """
+                if i == 1:
+                    print '{}\t{}'.format(day, job)
+                """
 
-                    if would_be_new_work_weekend:
-                        work_weekends += 1
+        if time_worked < employee.min_total_minutes:
+            print 'Trying to fix one here'
+            print 'Work weekends: {}/{}'.format(work_weekends, employee.max_weekends)
 
-                else:
-                    prev_shift = ''
-                    vacation_streak += 1
-                    work_streak = 0
-                    inst._matrix[i][day] = ''
 
     def generate_population(self, size):
         # Completely randomply generate a population
