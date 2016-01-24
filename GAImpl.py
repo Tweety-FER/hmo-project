@@ -2,11 +2,13 @@
 
 from GABase import Evaluator, Instance, PopulationGenerator
 from random import random, randint, choice
+from math import floor
+from sys import exit
 
-N_MUTATIONS = 5
-P_MUTATION = 0.3
+N_MUTATIONS = 2 # Maximum number of possible mutations in generation
+P_MUTATION = 0.1
 
-HARD_CONSTR_PENALTY = 100000
+HARD_CONSTR_PENALTY = 2500 # Penalty for each break of hard constraints
 
 def is_saturday(day):
     return day % 7 == 5
@@ -70,13 +72,30 @@ class ScheduleInstance(Instance):
                 mut_choice = randint(1, 4)
 
                 if mut_choice == 1: #Unset assignment
-                    self._set_random(None)
+                    self._set_random('')
                 elif mut_choice == 2: #Set assignment
                     self._set_random(choice(self._shift_names))
-                elif mut_choice == 3:
-                    mutant._swap_rows(randint(0, self._rows - 1), randint(0, self._rows - 1))
-                else:
-                    mutant._swap_cols(randint(0, self._cols - 1), randint(0, self._cols - 1))
+                elif mut_choice == 3: #Swap two assignments in row
+                    row = randint(0, self._rows - 1)
+                    j = randint(0, self._cols - 1)
+                    k = randint(0, self._cols - 1)
+
+                    mutant._matrix[row][j], mutant._matrix[row][k] = \
+                        mutant._matrix[row][k], mutant._matrix[row][j]
+                else: #Swap two assignments in col
+                    col = randint(0, self._cols - 1)
+
+                    j = randint(0, self._rows - 1)
+                    k = randint(0, self._rows - 1)
+
+                    mutant._matrix[j][col], mutant._matrix[k][col] = \
+                        mutant._matrix[k][col], mutant._matrix[j][col]
+
+
+                #elif mut_choice == 3:
+                #    mutant._swap_rows(randint(0, self._rows - 1), randint(0, self._rows - 1))
+                #else:
+                #    mutant._swap_cols(randint(0, self._cols - 1), randint(0, self._cols - 1))
 
         return mutant
 
@@ -89,8 +108,11 @@ class ScheduleInstance(Instance):
         baby._rows = self._rows
         baby._cols = self._cols
 
+        cross_week = floor(randint(0, self._rows - 1) // 7)
+        cross_day = cross_week * 7
+
         for i in xrange(self._rows):
-            if random() <= 0.5:
+            if i < cross_day:
                 baby._matrix.append(unshared_copy(self._matrix[i]))
             else:
                 baby._matrix.append(unshared_copy(other._matrix[i]))
@@ -114,9 +136,13 @@ class ScheduleEvaluator(Evaluator):
         broke_hard, score = self._evaluate(inst)
 
         if broke_hard:
-            score += HARD_CONSTR_PENALTY
+            score += HARD_CONSTR_PENALTY * broke_hard
 
         return score
+
+    def is_feasible(self, inst):
+        broke_hard, score = self._evaluate(inst)
+        return broke_hard == 0
 
     def _evaluate(self, inst):
         """
@@ -124,13 +150,13 @@ class ScheduleEvaluator(Evaluator):
         any hard constraints were broken.
         """
         score = 0
-        broke_hard = True
+        broke_hard = 0
 
         # Let us first iterate through the employee row related stuff
         for i in xrange(inst._rows):
             broke_hard_empl, score_empl = self._evaluate_for_employee(inst._matrix[i], i)
 
-            broke_hard = broke_hard or broke_hard_empl
+            broke_hard += broke_hard_empl
 
             score += score_empl
 
@@ -179,7 +205,7 @@ class ScheduleEvaluator(Evaluator):
         score = 0
         already_worked_this_weekend = False
         prev_shift = None
-        broke_hard = False
+        broke_hard = 0
 
         for name in self._shift_map:
             max_shifts[name] = 0
@@ -207,22 +233,25 @@ class ScheduleEvaluator(Evaluator):
 
                 # Vacation streak possibly just ended. Check if too short
                 if vacation_streak is not None and vacation_streak < employee.min_consecutive_days_off:
-                    broke_hard = True
+                    print 'Under minimum vacations'
+                    broke_hard += 1
 
-                vacation_streak = None
+                vacation_streak = 1 if vacation_streak is None else vacation_streak + 1
 
                 # Check invalid shifts lined up
                 if prev_shift:
                     actual_prev_shift = self._problem.shifts[self._shift_map[prev_shift]]
                     if not shift.can_follow(actual_prev_shift):
-                        broke_hard = True
+                        print 'Invalid shift follows this shift'
+                        broke_hard += 1
 
                 # Update shift counter
                 max_shifts[shift_name] += 1
 
                 #Check if day off
                 if day in employee.days_off:
-                    broke_hard = True
+                    print 'Working on a day off'
+                    broke_hard += 1
 
 
 
@@ -235,7 +264,8 @@ class ScheduleEvaluator(Evaluator):
                 # Work streak possibly just ended. Check if in min, max bounds
                 if work_streak is not None:
                     if work_streak < employee.min_consecutive_shifts or work_streak > employee.max_consecutive_shifts:
-                        broke_hard = True
+                        print 'Worked {} shifts when expecting [{}, {}]'.format(work_streak, employee.min_consecutive_shifts, employee.max_consecutive_shifts)
+                        broke_hard += 1
 
                 work_streak = None
 
@@ -249,29 +279,107 @@ class ScheduleEvaluator(Evaluator):
         # Check max shifts
         for shift in self._shift_map:
             if max_shifts.get(shift, 0) > employee.get_max_shift(shift):
-                broke_hard = True
+                print 'Worked too many shifts of type {}: {} when max is {}'.format(shift, max_shifts.get(shift, 0), employee.get_max_shift(shift))
+                broke_hard += 1
 
         # Check min and max work hours
         if time_worked < employee.min_total_minutes or time_worked > employee.max_total_minutes:
-            broke_hard = True
+            print 'Worked total minutes {} when expecting [{}, {}]'.format(time_worked, employee.min_total_minutes, employee.max_total_minutes)
+            broke_hard += 1
 
         # Check max work weekends
         if work_weekends > employee.max_weekends:
-            broke_hard = True
+            print 'Worked too many weekends {}/{}'.format(work_weekends, employee.max_weekends)
+            broke_hard += 1
 
 
         return broke_hard, score
 
-class RandomSchedulePopulationGenerator(PopulationGenerator):
+class GreedySchedulePopulationGenerator(PopulationGenerator):
+    """
+    Tries a bit harder to satisfy the constraints
+    """
     def __init__(self, problem):
         self._problem = problem
         self._shift_types = []
+        self._no_follows = {}
         self._n_employees = len(problem.employees)
+        self._shift_durations = {s.name : s.time for s in self._problem.shifts}
 
         for shift in self._problem.shifts:
             self._shift_types.append(shift.name)
+            self._no_follows[shift.name] = shift.not_followed_by
 
-        self._choices = self._shift_types + ['']
+    def _generate_employee_assignments(self, i, inst):
+        work_weekends = 0
+        work_streak = 0
+        vacation_streak = 0
+        time_worked = 0
+        already_worked_this_weekend = False
+        assigned_shifts = {shift : 0 for shift in self._shift_types}
+        employee = self._problem.employees[i]
+        prev_shift = ''
+        possible_shifts = []
+
+        for shift in self._shift_types:
+            duration = self._shift_durations[shift]
+            possible_shifts.append((shift, duration))
+
+        possible_shifts = sorted(possible_shifts, key=lambda x: x[1])#, reverse=True)
+
+        for day in xrange(self._problem.days):
+            would_be_new_work_weekend = is_saturday(day) or (is_sunday(day) and not already_worked_this_weekend)
+
+            # Check for situations when we CANNOT assign a user a task
+            needs_vacation = work_streak == employee.max_consecutive_shifts
+            is_day_off = day in employee.days_off
+            done_working = time_worked == employee.max_total_minutes
+            not_done_vacationing = 0 < vacation_streak < employee.min_consecutive_days_off
+            too_many_work_weekends = work_weekends >= employee.max_weekends and would_be_new_work_weekend
+
+            if needs_vacation or is_day_off or done_working or not_done_vacationing or too_many_work_weekends:
+                work_streak = 0
+                vacation_streak += 1
+                prev_shift = ''
+
+                inst._matrix[i][day] = ''
+
+            else: # You're working, man
+                # We need to find the shifts the person CAN work
+                # They cannot work shifts that cannot follow this one,
+                # shifts that would put them over the max hours or shifts
+                # that they've already done enough of
+                valid_shifts = []
+
+                for shift, duration in possible_shifts:
+                    if prev_shift and shift in self._no_follows[prev_shift]:
+                        continue
+                    if time_worked + duration > employee.max_total_minutes:
+                        continue
+                    if assigned_shifts[shift] + 1 > employee.get_max_shift(shift):
+                        continue
+
+                    valid_shifts.append((shift, duration))
+
+                # TODO random choice?
+                if valid_shifts: # Any actual choices left?
+                    job, duration = valid_shifts[0]
+                    time_worked += duration
+                    prev_shift = job
+                    assigned_shifts[job] += 1
+
+                    work_streak += 1
+                    vacation_streak = 0
+                    inst._matrix[i][day] = job
+
+                    if would_be_new_work_weekend:
+                        work_weekends += 1
+
+                else:
+                    prev_shift = ''
+                    vacation_streak += 1
+                    work_streak = 0
+                    inst._matrix[i][day] = ''
 
     def generate_population(self, size):
         # Completely randomply generate a population
@@ -280,8 +388,7 @@ class RandomSchedulePopulationGenerator(PopulationGenerator):
         for i in xrange(size):
             inst = ScheduleInstance(self._problem.days, self._problem.employees, self._shift_types)
             for j in xrange(self._n_employees):
-                for k in xrange(self._problem.days):
-                    inst._matrix[j][k] = choice(self._choices)
+                self._generate_employee_assignments(j, inst)
 
             pops.append(inst)
 
