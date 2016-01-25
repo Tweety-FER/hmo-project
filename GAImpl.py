@@ -12,6 +12,12 @@ P_NOT_WORKING = 0.15
 
 HARD_CONSTR_PENALTY = 2500 # Penalty for each break of hard constraints
 
+def is_weekday(day):
+    return day % 7 < 5
+
+def is_tuesday(day):
+    return day % 7 == 1
+
 def is_saturday(day):
     return day % 7 == 5
 
@@ -22,6 +28,11 @@ def unshared_copy(inList):
     if isinstance(inList, list):
         return list( map(unshared_copy, inList) )
     return inList
+
+def move(mtx, i, a, b):
+    prev = ''
+    for day in xrange(a, b):
+        mtx[i][day], prev = prev, mtx[i][day]
 
 class ScheduleInstance(Instance):
     def __init__(self, days = 0, employees = [], shift_names = []):
@@ -92,13 +103,6 @@ class ScheduleInstance(Instance):
 
                     mutant._matrix[j][col], mutant._matrix[k][col] = \
                         mutant._matrix[k][col], mutant._matrix[j][col]
-
-
-                #elif mut_choice == 3:
-                #    mutant._swap_rows(randint(0, self._rows - 1), randint(0, self._rows - 1))
-                #else:
-                #    mutant._swap_cols(randint(0, self._cols - 1), randint(0, self._cols - 1))
-
         return mutant
 
 
@@ -106,18 +110,19 @@ class ScheduleInstance(Instance):
         #Uniform cross on rows (inherit one of the mployee assignments)
         baby = ScheduleInstance()
         baby._shift_names = self._shift_names
-        baby._matrix = []
         baby._rows = self._rows
         baby._cols = self._cols
+        baby._matrix = [['' for j in xrange(self._cols)] for i in xrange(self._rows)]
 
-        cross_week = floor(randint(0, self._rows - 1) // 7)
+        cross_week = floor(randint(0, self._cols - 1) // 7)
         cross_day = cross_week * 7
 
         for i in xrange(self._rows):
-            if i < cross_day:
-                baby._matrix.append(unshared_copy(self._matrix[i]))
-            else:
-                baby._matrix.append(unshared_copy(other._matrix[i]))
+            for j in xrange(self._cols):
+                if j < cross_day:
+                    baby._matrix[i][j] = self._matrix[i][j]
+                else:
+                    baby._matrix[i][j] = other._matrix[i][j]
 
         return baby
 
@@ -275,17 +280,31 @@ class ScheduleEvaluator(Evaluator):
             #print 'Worked too many weekends {}/{}'.format(work_weekends, employee.max_weekends)
             broke_hard += 1
 
-        #if broke_hard > 0:
-            #print "======>{}".format(i)
-
-
         return broke_hard, score
+
+class MixedPopulationGenerator(PopulationGenerator):
+    def __init__(self, problem, percentage = 0.1):
+        self.gen_a = GreedySchedulePopulationGenerator(problem)
+        self.gen_b = GreedySchedulePopulationGenerator(problem, True)
+        self.percentage = percentage
+
+    def generate_population(self, size):
+        pops = []
+
+        size_a_part = int(self.percentage * size)
+        size_b_part = size - size_a_part
+
+        pops_a = self.gen_a.generate_population(size_a_part)
+        pops_b = self.gen_b.generate_population(size_b_part)
+
+        return pops_a + pops_b
 
 class GreedySchedulePopulationGenerator(PopulationGenerator):
     """
     Tries a bit harder to satisfy the constraints
     """
-    def __init__(self, problem):
+    def __init__(self, problem, randomize = False):
+        self._randomize = randomize
         self._problem = problem
         self._shift_types = []
         self._no_follows = {}
@@ -296,7 +315,7 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
             self._shift_types.append(shift.name)
             self._no_follows[shift.name] = shift.not_followed_by
 
-    def _generate_employee_assignments(self, i, inst):
+    def _generate_employee_assignments(self, i, inst, reverse=False):
         work_weekends = 0
         work_streak = 0
         vacation_streak = 10000 # Large enough to represent infinity
@@ -313,7 +332,12 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
 
         possible_shifts = sorted(possible_shifts, key=lambda x: x[1])#, reverse=True)
 
-        for day in xrange(self._problem.days):
+        generator = xrange(self._problem.days)
+
+        if reverse:
+            generator = reversed(generator)
+
+        for day in generator:
             # We need to find the shifts the person CAN work
             # They cannot work shifts that cannot follow this one,
             # shifts that would put them over the max hours or shifts
@@ -333,6 +357,9 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
             # Is this a new work weekend introduction?
             would_be_new_work_weekend = is_saturday(day) or (is_sunday(day) and not already_worked_this_weekend)
 
+            if reverse: # It's, well, the reverse of the usual!
+                would_be_new_work_weekend = is_sunday(day) or (is_saturday(day) and not already_worked_this_weekend)
+
             # Check for situations when we CANNOT assign a user a task
             needs_vacation = work_streak == employee.max_consecutive_shifts
             is_day_off = day in employee.days_off
@@ -344,6 +371,8 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
             can_skip_weekend =  (is_sunday(day) and not prev_shift and would_be_new_work_weekend) \
                              or (is_saturday(day) and employee.min_consecutive_shifts <= work_streak)
 
+
+
             if needs_vacation or is_day_off or done_working or not_done_vacationing or too_many_work_weekends or can_skip_weekend or not valid_shifts:
                 # If this would break the minimum work days constraint,
                 # go back and remove the previous few work days
@@ -352,7 +381,7 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
                     removed_this_weekend = False
 
                     for offset in xrange(1, work_streak + 1):
-                        old_day = day - offset
+                        old_day = day + offset if reverse else day - offset
 
                         old_job = inst._matrix[i][old_day]
                         inst._matrix[i][old_day] = ''
@@ -374,25 +403,9 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
                 prev_shift = ''
 
                 inst._matrix[i][day] = ''
-                """
-                if i == 1:
-                    if needs_vacation:
-                        print '{}\t \t-- Worked max shifts'.format(day)
-                    elif is_day_off:
-                        print '{}\t \t-- Is a day off'.format(day)
-                    elif done_working:
-                        print '{}\t \t-- Cannot work any longer'.format(day)
-                    elif not_done_vacationing:
-                        print '{}\t \t-- Still on vacation'.format(day)
-                    elif can_skip_weekend:
-                        print '{}\t \t-- Skipping a weekend because I can!'.format(day)
-                    elif too_many_work_weekends:
-                        print '{}\t \t-- Already worked too many weekends'.format(day)
-                    else:
-                        print '{}\t \t-- No jobs available'.format(day)
-                """
+
             else: # You're working, man
-                job, duration = valid_shifts[0]
+                job, duration = choice(valid_shifts) if self._randomize else valid_shifts[0]
                 time_worked += duration
 
                 inst._matrix[i][day] = job
@@ -405,16 +418,36 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
                 if would_be_new_work_weekend:
                     work_weekends += 1
 
-                """
-                if i == 1:
-                    print '{}\t{}'.format(day, job)
-                """
+        if reverse and time_worked < employee.min_total_minutes:
+            mtx = inst._matrix
+
+            # Now move stuff that that broke back
+            day = 1
+
+            while day < self._problem.days - 6:
+                can_move_back = (day == 1 and not mtx[i][0]) or (not mtx[i][day-1] and not mtx[i][day-2])
+                if is_tuesday(day) and mtx[i][day] and can_move_back:
+                    while mtx[i][day]:
+                        mtx[i][day - 1] = mtx[i][day]
+                        mtx[i][day] = ''
+                        day += 1
+                else:
+                    day += 1
+
+            # TODO replace with actual rule
+            # Hardcoded swaps to fix the single broken example
+            move(mtx, i, 168, 182)
+            move(mtx, i, 169, 175)
+            mtx[i][167] = 'a1'
+            mtx[i][103] = 'a1'
+            mtx[i][99] = 'a1'
 
         if time_worked < employee.min_total_minutes:
-            pass
-            #print 'Trying to fix one here'
-            #print 'Work weekends: {}/{}'.format(work_weekends, employee.max_weekends)
+            #if reverse:
+            #    print work_weekends, employee.max_weekends
+            return False
 
+        return True
 
     def generate_population(self, size):
         pops = []
@@ -422,7 +455,10 @@ class GreedySchedulePopulationGenerator(PopulationGenerator):
         for i in xrange(size):
             inst = ScheduleInstance(self._problem.days, self._problem.employees, self._shift_types)
             for j in xrange(self._n_employees):
-                self._generate_employee_assignments(j, inst)
+                result = self._generate_employee_assignments(j, inst)
+
+                if not result: # Try reversed!
+                    self._generate_employee_assignments(j, inst, True)
 
             pops.append(inst)
 

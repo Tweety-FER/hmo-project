@@ -63,14 +63,14 @@ class GeneticAlgorithm(object):
 
             # Generate a new population (elitism!)
             pops = [x[1] for x in eval_pops[0:5]]
-            
+
             if best_score is None:
                 best_score = eval_pops[0][0]
             else:
                 best_score = min(best_score, eval_pops[0][0])
 
             if self.print_every is not None and i % self.print_every == 0:
-                print 'Iteration {0}, best score {1}'.format(i, best_score)
+                print 'Iteration {0}, best score {1}'.format(i, self._eval._evaluate(pops[0]))
 
             if best_score is not None and best_score <= min_score:
                 break
